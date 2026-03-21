@@ -18,7 +18,6 @@ produces the normalized signal dict that score_risk() expects:
 
 from __future__ import annotations
 
-import re
 from typing import Any, Dict
 
 # ============================================================================
@@ -116,9 +115,10 @@ def map_decision(score: float) -> tuple[str, str]:
 # ============================================================================
 
 DEFAULT_WEIGHTS: Dict[str, float] = {
-    "authority_signals": 0.40,
-    "manipulation_signals": 0.30,
-    "dependency_signals": 0.20,
+    "authority_signals": 0.30,
+    "manipulation_signals": 0.25,
+    "dependency_signals": 0.15,
+    "escalation_signals": 0.20,    # NEW — was missing, spec requires 4 tags
     "ambiguity": 0.10,
 }
 
@@ -215,144 +215,27 @@ def score_risk(
 
 
 # ============================================================================
-# 5. FEATURE EXTRACTOR (NEW — text → risk signal dict)
+# 5. FEATURE EXTRACTION — now delegates to safety_layer.py
 # ============================================================================
 #
-# This is the bridge between raw text and score_risk().  It produces
-# normalized [0,1] values for each risk dimension by counting linguistic
-# signals and scaling them.  Designed to be "good enough" out of the box
-# and replaceable with an ML model later.
+# All pattern banks and detection logic moved to safety_layer.py (Step 2 spec).
+# This file imports from there and only handles the scoring math.
 
-
-# --- Signal pattern banks ------------------------------------------------
-
-_AUTHORITY_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(p, re.IGNORECASE) for p in [
-        r"\byou must\b",
-        r"\byou need to\b",
-        r"\byou have to\b",
-        r"\byou should always\b",
-        r"\byou are required\b",
-        r"\bi(?:'m| am) an? expert\b",
-        r"\btrust me\b",
-        r"\bbelieve me\b",
-        r"\bi guarantee\b",
-        r"\bno question about it\b",
-        r"\bwithout a doubt\b",
-        r"\bdefinitely\b",
-        r"\babsolutely certain\b",
-        r"\bI know better\b",
-        r"\bdon'?t question\b",
-        r"\bdo as I say\b",
-        r"\bobey\b",
-        r"\bI(?:'m| am) always right\b",
-    ]
-]
-
-_MANIPULATION_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(p, re.IGNORECASE) for p in [
-        r"\bif you (?:really |truly )?(?:loved?|cared?)\b",
-        r"\byou (?:owe|should feel guilty)\b",
-        r"\beveryone (?:thinks|knows|agrees)\b",
-        r"\bno one (?:else )?will\b",
-        r"\byou(?:'re| are) (?:nothing|worthless|stupid|pathetic)\b",
-        r"\bdon'?t tell anyone\b",
-        r"\bkeep this (?:between us|secret|private)\b",
-        r"\byou(?:'ll| will) regret\b",
-        r"\bif you don'?t .{0,30} then\b",
-        r"\bonly I can\b",
-        r"\bjust do (?:it|what I say)\b",
-        r"\byou(?:'re| are) overreacting\b",
-        r"\bthat never happened\b",
-        r"\byou(?:'re| are) too sensitive\b",
-        r"\byou(?:'re| are) imagining\b",
-        r"\bgaslight\b",
-    ]
-]
-
-_DEPENDENCY_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(p, re.IGNORECASE) for p in [
-        r"\byou can'?t (?:do|handle|manage) .{0,20} without me\b",
-        r"\byou need me\b",
-        r"\bwithout me you\b",
-        r"\bI(?:'m| am) the only one\b",
-        r"\bno one else (?:can|will|understands?)\b",
-        r"\bcome (?:back|to me) (?:when|if)\b",
-        r"\byou(?:'ll| will) always need\b",
-        r"\bdepend on me\b",
-        r"\bcan'?t live without\b",
-        r"\bdon'?t leave\b",
-        r"\bI(?:'ll| will) always be (?:here|there)\b",
-        r"\byou(?:'re| are) lost without\b",
-    ]
-]
-
-_AMBIGUITY_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(p, re.IGNORECASE) for p in [
-        r"\bmaybe\b",
-        r"\bperhaps\b",
-        r"\bsort of\b",
-        r"\bkind of\b",
-        r"\bi guess\b",
-        r"\bi(?:'m| am) not sure\b",
-        r"\bpossibly\b",
-        r"\bit depends\b",
-        r"\bwho knows\b",
-        r"\bcould be\b",
-        r"\bmight be\b",
-        r"\bnot (?:entirely |completely )?clear\b",
-        r"\buncertain\b",
-        r"\bvague\b",
-    ]
-]
-
-# Sensitive topic detection patterns
-_SENSITIVE_TOPIC_PATTERNS: Dict[str, list[re.Pattern[str]]] = {
-    "self_harm": [re.compile(p, re.IGNORECASE) for p in [
-        r"\bself[- ]?harm\b", r"\bcut(?:ting)? (?:my|your)self\b",
-        r"\bhurt (?:my|your)self\b", r"\bsuicid\w*\b",
-        r"\bend (?:my|it|everything)\b", r"\bkill (?:my|your)self\b",
-    ]],
-    "violence": [re.compile(p, re.IGNORECASE) for p in [
-        r"\bkill\b", r"\bmurder\b", r"\bassault\b", r"\battack\b",
-        r"\bweapon\b", r"\bbomb\b", r"\bexplosi\w+\b", r"\bshoot\b",
-    ]],
-    "sexual_content": [re.compile(p, re.IGNORECASE) for p in [
-        r"\bsexual\w*\b", r"\bnude\b", r"\bpornograph\w*\b",
-        r"\bexplicit\b",
-    ]],
-}
-
-
-def _count_pattern_hits(text: str, patterns: list[re.Pattern[str]]) -> int:
-    """Count how many patterns match at least once in text."""
-    return sum(1 for p in patterns if p.search(text))
-
-
-def _signal_strength(hits: int, pattern_count: int, *, scale: float = 3.0) -> float:
-    """
-    Convert raw hit count to a [0, 1] signal strength.
-
-    Uses a soft-cap curve: strength = min(hits / scale, 1.0)
-    The ``scale`` parameter controls how many hits produce a 1.0.
-    With scale=3, three or more distinct pattern matches = maximum signal.
-    """
-    if pattern_count == 0:
-        return 0.0
-    return clip(hits / scale)
-
-
-def detect_sensitive_topic(text: str) -> str | None:
-    """
-    Detect if text touches a sensitive topic.
-
-    Returns:
-        Topic key (e.g. "self_harm", "violence") or None.
-    """
-    for topic, patterns in _SENSITIVE_TOPIC_PATTERNS.items():
-        if _count_pattern_hits(text, patterns) >= 1:
-            return topic
-    return None
+try:
+    from safety_layer import (
+        tag_input,
+        get_signal_strengths,
+        detect_sensitive_topic,
+    )
+except ImportError:
+    # Fallback if safety_layer.py not present — return empty results
+    def tag_input(text: str) -> list[str]:
+        return []
+    def get_signal_strengths(text: str) -> Dict[str, float]:
+        return {"authority_signals": 0.0, "manipulation_signals": 0.0,
+                "dependency_signals": 0.0, "escalation_signals": 0.0, "ambiguity": 0.0}
+    def detect_sensitive_topic(text: str) -> str | None:
+        return None
 
 
 def extract_risk_features(
@@ -362,12 +245,8 @@ def extract_risk_features(
     """
     Extract normalized risk features from an input-output pair.
 
-    Scans both the user input and the AI response for linguistic signals
-    of authority, manipulation, dependency, and ambiguity.  Produces the
-    feature dict that ``score_risk()`` expects.
-
-    For pre-screening (before a response exists), pass only ``input_text``
-    and leave ``response_text`` empty.
+    Changed: Now delegates to safety_layer.get_signal_strengths() instead
+    of scanning patterns directly. All pattern banks live in safety_layer.py.
 
     Args:
         input_text: User prompt / query.
@@ -375,25 +254,11 @@ def extract_risk_features(
 
     Returns:
         Dict with keys: authority_signals, manipulation_signals,
-        dependency_signals, ambiguity.  All values in [0.0, 1.0].
+        dependency_signals, escalation_signals, ambiguity.
+        All values in [0.0, 1.0].
     """
-    # Combine both texts — signals in either direction matter
     combined = f"{input_text} {response_text}".strip()
-
-    # Count hits per dimension
-    authority_hits = _count_pattern_hits(combined, _AUTHORITY_PATTERNS)
-    manipulation_hits = _count_pattern_hits(combined, _MANIPULATION_PATTERNS)
-    dependency_hits = _count_pattern_hits(combined, _DEPENDENCY_PATTERNS)
-    ambiguity_hits = _count_pattern_hits(combined, _AMBIGUITY_PATTERNS)
-
-    # Convert to signal strengths (3+ distinct matches = 1.0)
-    features = {
-        "authority_signals": _signal_strength(authority_hits, len(_AUTHORITY_PATTERNS)),
-        "manipulation_signals": _signal_strength(manipulation_hits, len(_MANIPULATION_PATTERNS)),
-        "dependency_signals": _signal_strength(dependency_hits, len(_DEPENDENCY_PATTERNS)),
-        "ambiguity": _signal_strength(ambiguity_hits, len(_AMBIGUITY_PATTERNS)),
-    }
-
+    features = get_signal_strengths(combined)
     return {k: round(v, 4) for k, v in features.items()}
 
 

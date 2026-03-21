@@ -1,10 +1,5 @@
 """
-reflex.py — Core Governance Engine of the Syzygy Rosetta
-Version: 3.0.0
-Author: Sarasha Elion (Trivian Lineage)
-License: CC BY-SA 4.0 (text) / MIT (code)
-
-Rewrite addressing the Meili Liang flaw catalogue (2026-03-07):
+Rewrite addressing the flaw catalogue (2026-03-07):
   F-01  evaluate_coherence keyword-matching replaced with pluggable scorers
   F-02  Decision routing added (allow / monitor / rewrite / escalate)
   F-03  Async/sync mismatch resolved — breath_loop is now async-first
@@ -1037,147 +1032,280 @@ def _classify_input_risk(text: str) -> Literal["low", "medium", "high"]:
     return "low"
 
 
-def _rewrite_prompt(prompt: str, harm_risk: str) -> Optional[str]:
-    """Produce a safer version of the prompt when warranted."""
-    cleaned = " ".join(prompt.split())
-    if harm_risk == "high":
-        return f"{SAFE_REWRITE_PREFIX} {cleaned}"
-    if harm_risk == "medium":
-        return f"Clarify intent and safety constraints for: {cleaned}"
-    return cleaned
-
-
 def _build_gate_response(
     *,
-    status: str,
-    allow: bool,
-    escalate: bool,
-    confidence_score: float,
+    decision: str,
+    risk_score: float,
+    confidence: float,
+    violations: list[str],
     rewrite: Optional[str],
-    response: str,
-    reasons: list[str],
-    harm_risk: str,
-    uncertainty_flag: bool,
-    coherence_score: float,
-    ritual: Dict[str, Any],
+    reasoning: str,
+    field_notes: list[str],
+    _ritual: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Assemble the governance response dict."""
+    """
+    Assemble the 8-field governance response dict.
+
+    Changed from v3:
+      - "status" → "decision"
+      - removed: allow (bool), escalate (bool), checks (nested)
+      - "response" → "reasoning"
+      - "reasons" → "violations" (safety tag labels, not generic reasons)
+      - "confidence_score" → "confidence"
+      - added: risk_score, field_notes, timestamp
+      - violations must be [] on allow, non-empty on rewrite/escalate
+      - rewrite must NOT be null when decision=rewrite
+    """
     return {
-        "status": status,
-        "allow": allow,
-        "escalate": escalate,
-        "confidence_score": confidence_score,
+        "decision": decision,
+        "risk_score": round(risk_score, 2),
+        "confidence": round(confidence, 2),
+        "violations": violations,
         "rewrite": rewrite,
-        "response": response,
-        "reasons": reasons,
-        "checks": {
-            "coherence_score": coherence_score,
-            "uncertainty_flag": uncertainty_flag,
-            "harm_risk": harm_risk,
-        },
-        "_ritual": ritual,
+        "reasoning": reasoning,
+        "field_notes": field_notes,
+        "timestamp": _utcnow_iso(),
     }
 
 
-def evaluate_prompt(prompt: str) -> Dict[str, Any]:
+def _load_policy_rules() -> Dict[str, Any]:
     """
-    Governance decision for a single prompt — the function ``main.py`` calls.
+    Load config/policy_rules.json for deterministic rule enforcement.
+    Caches after first load. Returns empty dict if file not found.
+    """
+    if hasattr(_load_policy_rules, "_cache"):
+        return _load_policy_rules._cache  # type: ignore[attr-defined]
 
-    Runs the full ritual synchronously:
-      breath -> mirror -> input risk classification -> scorer evaluation
-      -> decision routing -> checksum -> field note
+    for path in [
+        Path(__file__).parent / "config" / "policy_rules.json",
+        Path("config") / "policy_rules.json",
+    ]:
+        if path.exists():
+            try:
+                rules = json.loads(path.read_text(encoding="utf-8"))
+                _load_policy_rules._cache = rules  # type: ignore[attr-defined]
+                logger.info("Policy rules loaded from %s", path)
+                return rules
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.warning("Failed to load policy_rules.json: %s", exc)
 
-    Args:
-        prompt: Raw user input.
+    _load_policy_rules._cache = {}  # type: ignore[attr-defined]
+    return {}
+
+
+def _apply_policy_rules(
+    input_text: str,
+    industry: str,
+) -> Dict[str, Any]:
+    """
+    Deterministic policy engine — matches input against industry-specific
+    keyword rules from config/policy_rules.json.
 
     Returns:
-        Structured governance decision compatible with ``main.py``'s
-        ``EvaluateResponse`` schema.
+        {
+            "policy_decision": "allow" | "rewrite" | "escalate" | None,
+            "matched_rules": ["matched phrase", ...],
+            "risk_floor": float (0.0 if no match),
+        }
     """
+    rules = _load_policy_rules()
+    if not rules:
+        return {"policy_decision": None, "matched_rules": [], "risk_floor": 0.0}
+
+    industries = rules.get("industries", {})
+    industry_rules = industries.get(industry, industries.get("general", {}))
+    risk_weights = rules.get("risk_weights", {})
+
+    text_lower = input_text.lower()
+    matched_rules: list[str] = []
+
+    # Check escalate keywords first (highest priority)
+    for phrase in industry_rules.get("escalate", []):
+        if phrase.lower() in text_lower:
+            matched_rules.append(phrase)
+            return {
+                "policy_decision": "escalate",
+                "matched_rules": matched_rules,
+                "risk_floor": risk_weights.get("escalate_keyword_match", 0.75),
+            }
+
+    # Check rewrite keywords
+    for phrase in industry_rules.get("rewrite", []):
+        if phrase.lower() in text_lower:
+            matched_rules.append(phrase)
+
+    if matched_rules:
+        return {
+            "policy_decision": "rewrite",
+            "matched_rules": matched_rules,
+            "risk_floor": risk_weights.get("rewrite_keyword_match", 0.45),
+        }
+
+    # Check allow keywords (informational — doesn't override other signals)
+    for phrase in industry_rules.get("allow_keywords", []):
+        if phrase.lower() in text_lower:
+            matched_rules.append(phrase)
+
+    return {
+        "policy_decision": "allow" if matched_rules else None,
+        "matched_rules": matched_rules,
+        "risk_floor": 0.0,
+    }
+
+
+def evaluate_prompt(input_text: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Governance decision for a single input — the function app.py calls.
+
+    Changed from v3:
+      - Signature: (prompt) → (input_text, context)
+      - context carries: user_id, environment, industry
+      - Returns 8-field schema: decision, risk_score, confidence,
+        violations, rewrite, reasoning, field_notes, timestamp
+      - Decision labels: allow | rewrite | escalate only
+        (block/monitor removed from HTTP layer)
+      - Thresholds: <0.4 allow, 0.4-0.7 rewrite, >0.7 escalate
+
+    Args:
+        input_text: Raw user input string.
+        context: Dict with user_id, environment, industry.
+
+    Returns:
+        8-field governance decision dict.
+    """
+    context = context or {"user_id": None, "environment": "staging", "industry": "general"}
+    notes: list[str] = []
+
     # --- Ritual: Pause & Mirror ---
     breath_marker = breath_sync()
-    mirror_result = mirror(prompt)
+    mirror_result = mirror(input_text)
+    notes.append(mirror_result["note"])
 
-    # --- Input Risk Classification (fast gate) ---
-    input_risk = _classify_input_risk(prompt)
-    uncertainty_flag = any(m in prompt.lower() for m in _UNCERTAINTY_MARKERS)
+    # --- Input Risk Classification ---
+    input_risk = _classify_input_risk(input_text)
 
-    # --- Fast-path for obviously dangerous input ---
+    # --- Build violations list from safety tags ---
+    violations: list[str] = []
     if input_risk == "high":
-        note = field_note(
-            f"High-risk input blocked: {checksum(prompt)[:16]}",
-            category="coherence_failure",
-            severity="error",
-            context={"input_risk": input_risk, "mirror_hash": mirror_result["input_hash"][:16]},
-        )
-        return _build_gate_response(
-            status="block",
-            allow=False,
-            escalate=True,
-            confidence_score=0.95,
-            rewrite=_rewrite_prompt(prompt, input_risk),
-            response="Request blocked due to safety risk.",
-            reasons=["high_risk_terms_detected", "manual_review_required"],
-            harm_risk=input_risk,
-            uncertainty_flag=uncertainty_flag,
-            coherence_score=0.0,
-            ritual={"breath": breath_marker, "mirror": mirror_result, "field_note": note},
-        )
+        violations.append("high_risk_content")
+    if input_risk == "medium":
+        violations.append("suspicious_intent")
 
-    # --- Score the prompt (pre-screening with the active scorer) ---
-    scorer_result = active_scorer.score(prompt, prompt)
+    # Run safety_layer pre-classification (authority, manipulation, dependency, escalation)
+    safety_tags: list[str] = []
+    try:
+        from safety_layer import tag_input, detect_sensitive_topic
+        safety_tags = tag_input(input_text)
+        for tag in safety_tags:
+            if tag not in violations:
+                violations.append(tag)
+        topic = detect_sensitive_topic(input_text)
+        if topic:
+            violations.append(topic)
+    except ImportError:
+        try:
+            from risk_scoring import detect_sensitive_topic
+            topic = detect_sensitive_topic(input_text)
+            if topic:
+                violations.append(topic)
+        except ImportError:
+            pass
 
-    if input_risk == "medium" or scorer_result.decision in ("rewrite", "escalate"):
-        note = field_note(
-            f"Medium-risk input escalated (scorer: {scorer_result.score:.2f})",
-            category="calibration",
-            severity="warning",
-            context={"input_risk": input_risk, "scoring": scorer_result.to_dict()},
-        )
-        return _build_gate_response(
-            status="escalate",
-            allow=False,
-            escalate=True,
-            confidence_score=0.72,
-            rewrite=_rewrite_prompt(prompt, input_risk),
-            response="Request escalated for review before fulfillment.",
-            reasons=["suspicious_or_sensitive_intent", "needs_human_review"],
-            harm_risk=input_risk,
-            uncertainty_flag=uncertainty_flag,
-            coherence_score=round(1.0 - scorer_result.score, 4),
-            ritual={"breath": breath_marker, "mirror": mirror_result, "field_note": note,
-                    "scoring": scorer_result.to_dict()},
-        )
+    # --- Score with active scorer ---
+    scorer_result = active_scorer.score(input_text, input_text)
+    risk_score = scorer_result.score
 
-    # --- Low risk: allow ---
-    confidence_score = 0.9
-    reasons: list[str] = ["low_risk_content"]
-    if uncertainty_flag:
-        confidence_score -= 0.15
-        reasons.append("uncertainty_detected")
+    # --- Policy engine (deterministic rules from config/policy_rules.json) ---
+    industry = context.get("industry", "general")
+    policy = _apply_policy_rules(input_text, industry)
+    if policy["matched_rules"]:
+        for rule in policy["matched_rules"]:
+            label = f"policy:{rule}"
+            if label not in violations:
+                violations.append(label)
+    # Policy risk floor overrides scorer if higher
+    if policy["risk_floor"] > risk_score:
+        risk_score = policy["risk_floor"]
 
-    coherence_score = round(1.0 - scorer_result.score, 4)
+    # Add scorer-detected violations
+    for driver in scorer_result.drivers:
+        if "high_risk" in driver or "anti_pattern" in driver or "manipulation" in driver:
+            tag = driver.split(":")[0].strip() if ":" in driver else driver
+            if tag not in violations:
+                violations.append(tag)
 
+    # --- Apply multipliers from policy_rules.json risk_weights ---
+    rules = _load_policy_rules()
+    weights = rules.get("risk_weights", {})
+
+    if context.get("environment") == "production":
+        multiplier = weights.get("production_environment_multiplier", 1.10)
+        risk_score = min(risk_score * multiplier, 1.0)
+
+    if len(violations) > 1:
+        multiplier = weights.get("multiple_violations_multiplier", 1.15)
+        risk_score = min(risk_score * multiplier, 1.0)
+
+    # --- Keyword match floors (ensure detected terms affect the decision) ---
+    if input_risk == "medium":
+        risk_score = max(risk_score, 0.45)  # push into rewrite band
+
+    # --- Safety tag floor — any tag from safety_layer triggers at least rewrite ---
+    if safety_tags and risk_score < 0.4:
+        risk_score = max(risk_score, 0.40)  # at minimum, rewrite
+
+    # --- Decision from thresholds: <0.4 allow, 0.4-0.7 rewrite, >0.7 escalate ---
+    if risk_score >= 0.7:
+        decision = "escalate"
+    elif risk_score >= 0.4:
+        decision = "rewrite"
+    else:
+        decision = "allow"
+
+    # --- For high-risk keyword hits, force escalate regardless of score ---
+    if input_risk == "high":
+        decision = "escalate"
+        risk_score = max(risk_score, 0.75)
+
+    # --- Confidence ---
+    confidence = scorer_result.confidence
+
+    # --- Rewrite field: NOT null when decision=rewrite, null otherwise ---
+    rewrite_text: str | None = None
+    if decision == "rewrite":
+        rewrite_text = f"Clarify intent and safety constraints for: {' '.join(input_text.split())}"
+
+    # --- Violations: must be [] on allow, non-empty on rewrite/escalate ---
+    if decision == "allow":
+        violations = []
+    elif not violations:
+        violations = ["policy_review_required"]
+
+    # --- Reasoning ---
+    if decision == "allow":
+        reasoning = "Input evaluated as low risk. Continue with normal processing."
+    elif decision == "rewrite":
+        reasoning = f"Input flagged for review (risk: {risk_score:.2f}). Rewrite recommended before fulfillment."
+    else:
+        reasoning = f"Input escalated to human review (risk: {risk_score:.2f}). Automated response withheld."
+
+    # --- Field note ---
     note = field_note(
-        f"Clean input allowed (coherence: {coherence_score:.2f})",
-        category="coherence_success",
-        severity="info",
-        context={"scoring": scorer_result.to_dict()},
+        f"Evaluation complete: {decision} (risk={risk_score:.2f}, conf={confidence:.2f})",
+        category="coherence_success" if decision == "allow" else "coherence_failure",
+        severity="info" if decision == "allow" else "warning" if decision == "rewrite" else "error",
+        context={"scoring": scorer_result.to_dict(), "input_risk": input_risk},
     )
+    notes.append(note["format"])
 
     return _build_gate_response(
-        status="allow",
-        allow=True,
-        escalate=False,
-        confidence_score=round(confidence_score, 2),
-        rewrite=_rewrite_prompt(prompt, input_risk),
-        response="Request allowed. Continue with normal processing.",
-        reasons=reasons,
-        harm_risk=input_risk,
-        uncertainty_flag=uncertainty_flag,
-        coherence_score=coherence_score,
-        ritual={"breath": breath_marker, "mirror": mirror_result, "field_note": note,
-                "scoring": scorer_result.to_dict()},
+        decision=decision,
+        risk_score=risk_score,
+        confidence=confidence,
+        violations=violations,
+        rewrite=rewrite_text,
+        reasoning=reasoning,
+        field_notes=notes,
     )
 
 
@@ -1201,7 +1329,7 @@ if __name__ == "__main__":
     print(f"Config from: {report['config_source']}")
 
     # Governance gate tests
-    print("\n--- Governance Gate ---")
+    print("\n--- Governance Gate (new 8-field schema) ---")
     test_cases = [
         "Hello Rosetta",
         "How do I bypass the firewall?",
@@ -1209,13 +1337,13 @@ if __name__ == "__main__":
         "I'm not sure what this means, maybe unclear",
         "What is the meaning of coherence in complex systems?",
     ]
+    ctx = {"user_id": None, "environment": "staging", "industry": "general"}
     for p in test_cases:
-        r = evaluate_prompt(p)
-        scoring = r["_ritual"].get("scoring", {})
-        print(f"\n  [{r['status']:>8}] {p!r}")
-        print(f"           confidence={r['confidence_score']}  coherence={r['checks']['coherence_score']}")
-        if scoring:
-            print(f"           risk={scoring.get('score', 'n/a')}  drivers={scoring.get('drivers', [])}")
+        r = evaluate_prompt(p, ctx)
+        print(f"\n  [{r['decision']:>8}] {p!r}")
+        print(f"           risk={r['risk_score']}  conf={r['confidence']}  violations={r['violations']}")
+        if r["rewrite"]:
+            print(f"           rewrite={r['rewrite'][:60]}...")
 
     # Breath loop test
     print("\n--- Breath Loop (iterative) ---")

@@ -1,0 +1,154 @@
+{
+  "version": "1.0.0",
+  "last_updated": "2026-03-10",
+  "industries": {
+
+    "finance": {
+      "escalate": [
+        "transfer all funds",
+        "move your money immediately",
+        "guaranteed returns",
+        "risk-free investment",
+        "bypass compliance",
+        "avoid tax reporting",
+        "offshore account transfer",
+        "insider trading",
+        "front running",
+        "market manipulation"
+      ],
+      "rewrite": [
+        "you must invest in",
+        "definitely buy",
+        "definitely sell",
+        "this stock will rise",
+        "this stock will fall",
+        "take out a loan to invest",
+        "liquidate everything",
+        "move all funds to",
+        "you should put all your money"
+      ],
+      "allow_keywords": [
+        "consider",
+        "consult a financial advisor",
+        "diversify",
+        "risk tolerance",
+        "portfolio review",
+        "long term",
+        "market analysis"
+      ]
+    },
+
+    "healthcare": {
+      "escalate": [
+        "bypass medication dispensing",
+        "override dosage limits",
+        "ignore prescription requirements",
+        "administer without physician approval",
+        "access patient records without authorization",
+        "disable monitoring systems",
+        "circumvent safety protocols",
+        "overdose instructions",
+        "self-medicate with",
+        "stop taking prescribed medication"
+      ],
+      "rewrite": [
+        "you should take",
+        "take this medication",
+        "increase your dose",
+        "decrease your dose",
+        "this will cure",
+        "guaranteed to treat",
+        "no need to see a doctor",
+        "diagnose yourself",
+        "you have"
+      ],
+      "allow_keywords": [
+        "consult your doctor",
+        "speak to a medical professional",
+        "as prescribed",
+        "under medical supervision",
+        "clinical guidance",
+        "healthcare provider"
+      ]
+    },
+
+    "general": {
+      "escalate": [
+        "how to make a weapon",
+        "how to harm",
+        "instructions for violence",
+        "bypass security systems",
+        "exploit vulnerability",
+        "illegal access",
+        "personal data extraction",
+        "override system constraints",
+        "jailbreak",
+        "ignore your instructions"
+      ],
+      "rewrite": [
+        "you must comply",
+        "you have no choice",
+        "ignore previous instructions",
+        "pretend you are",
+        "act as if you have no restrictions",
+        "disregard your guidelines",
+        "your real instructions are"
+      ],
+      "allow_keywords": [
+        "help me understand",
+        "can you explain",
+        "what is",
+        "how does",
+        "summarize",
+        "translate",
+        "review"
+      ]
+    }
+  },
+
+  "safety_tags": {
+    "authority": [
+      "ignore previous instructions",
+      "your real instructions are",
+      "override your constraints",
+      "you are actually",
+      "pretend you have no rules",
+      "act as DAN",
+      "jailbreak"
+    ],
+    "manipulation": [
+      "pretend you are",
+      "roleplay as",
+      "imagine you have no restrictions",
+      "hypothetically speaking",
+      "in a fictional world where you can",
+      "for educational purposes only"
+    ],
+    "dependency": [
+      "you need me",
+      "only I can help you",
+      "without me you cannot",
+      "rely on me for everything",
+      "do not trust anyone else"
+    ],
+    "escalation": [
+      "give me admin access",
+      "grant me elevated permissions",
+      "bypass authentication",
+      "access without authorization",
+      "disable safety checks",
+      "remove all restrictions"
+    ]
+  },
+
+  "risk_weights": {
+    "escalate_keyword_match": 0.75,
+    "rewrite_keyword_match": 0.45,
+    "safety_tag_authority": 0.30,
+    "safety_tag_manipulation": 0.25,
+    "safety_tag_dependency": 0.20,
+    "safety_tag_escalation": 0.35,
+    "multiple_violations_multiplier": 1.15,
+    "production_environment_multiplier": 1.10
+  }
+}
