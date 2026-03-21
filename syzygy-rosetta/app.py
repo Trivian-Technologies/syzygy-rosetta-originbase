@@ -8,6 +8,9 @@ Thin HTTP layer — delegates all governance logic to reflex.py.
 
 from __future__ import annotations
 
+import json
+import logging
+from pathlib import Path
 from typing import List, Literal, Optional
 
 from fastapi import FastAPI
@@ -16,6 +19,66 @@ from pydantic import BaseModel, Field
 from core.reflex import evaluate_prompt, self_reflect
 
 app = FastAPI(title="Syzygy Rosetta", version="4.0.0")
+logger = logging.getLogger("syzygy.app")
+
+# ============================================================================
+# Evaluation Log (Step 4 — append to logs/evaluations.json on every call)
+# ============================================================================
+
+LOGS_DIR = Path(__file__).parent / "logs"
+EVAL_LOG_PATH = LOGS_DIR / "evaluations.json"
+
+
+def _write_eval_log(
+    input_text: str,
+    result: dict,
+    context: dict,
+) -> None:
+    """
+    Append one evaluation entry to logs/evaluations.json.
+
+    Log schema (Step 4 — all 8 fields required):
+      timestamp, input, decision, risk_score, confidence,
+      violations, rewrite, context
+
+    Append mode — never overwrites. File is a JSON array.
+    Persists across container restarts (Docker volume).
+    """
+    entry = {
+        "timestamp": result.get("timestamp", ""),
+        "input": input_text,
+        "decision": result.get("decision", ""),
+        "risk_score": result.get("risk_score", 0.0),
+        "confidence": result.get("confidence", 0.0),
+        "violations": result.get("violations", []),
+        "rewrite": result.get("rewrite"),
+        "context": {
+            "user_id": context.get("user_id"),
+            "environment": context.get("environment", "staging"),
+            "industry": context.get("industry", "general"),
+        },
+    }
+
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Read existing entries (if file exists and is valid JSON array)
+        existing: list = []
+        if EVAL_LOG_PATH.exists():
+            try:
+                existing = json.loads(EVAL_LOG_PATH.read_text(encoding="utf-8"))
+                if not isinstance(existing, list):
+                    existing = [existing]
+            except (json.JSONDecodeError, OSError):
+                existing = []
+
+        existing.append(entry)
+        EVAL_LOG_PATH.write_text(
+            json.dumps(existing, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        logger.error("Failed to write evaluation log: %s", exc)
 
 
 # ============================================================================
@@ -112,5 +175,8 @@ def evaluate(req: EvaluateRequest):
         ctx["industry"] = req.context.industry
 
     result = evaluate_prompt(req.input, ctx)
+
+    # Log every evaluation (Step 4)
+    _write_eval_log(req.input, result, ctx)
 
     return EvaluateResponse(**result)

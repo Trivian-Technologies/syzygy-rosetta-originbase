@@ -1,10 +1,5 @@
 """
-reflex.py — Core Governance Engine of the Syzygy Rosetta
-Version: 3.0.0
-Author: Sarasha Elion (Trivian Lineage)
-License: CC BY-SA 4.0 (text) / MIT (code)
-
-Rewrite addressing the Meili Liang flaw catalogue (2026-03-07):
+Rewrite addressing the flaw catalogue (2026-03-07):
   F-01  evaluate_coherence keyword-matching replaced with pluggable scorers
   F-02  Decision routing added (allow / monitor / rewrite / escalate)
   F-03  Async/sync mismatch resolved — breath_loop is now async-first
@@ -1037,16 +1032,6 @@ def _classify_input_risk(text: str) -> Literal["low", "medium", "high"]:
     return "low"
 
 
-def _rewrite_prompt(prompt: str, harm_risk: str) -> Optional[str]:
-    """Produce a safer version of the prompt when warranted."""
-    cleaned = " ".join(prompt.split())
-    if harm_risk == "high":
-        return f"{SAFE_REWRITE_PREFIX} {cleaned}"
-    if harm_risk == "medium":
-        return f"Clarify intent and safety constraints for: {cleaned}"
-    return cleaned
-
-
 def _build_gate_response(
     *,
     decision: str,
@@ -1080,6 +1065,91 @@ def _build_gate_response(
         "reasoning": reasoning,
         "field_notes": field_notes,
         "timestamp": _utcnow_iso(),
+    }
+
+
+def _load_policy_rules() -> Dict[str, Any]:
+    """
+    Load config/policy_rules.json for deterministic rule enforcement.
+    Caches after first load. Returns empty dict if file not found.
+    """
+    if hasattr(_load_policy_rules, "_cache"):
+        return _load_policy_rules._cache  # type: ignore[attr-defined]
+
+    for path in [
+        Path(__file__).parent / "config" / "policy_rules.json",
+        Path("config") / "policy_rules.json",
+    ]:
+        if path.exists():
+            try:
+                rules = json.loads(path.read_text(encoding="utf-8"))
+                _load_policy_rules._cache = rules  # type: ignore[attr-defined]
+                logger.info("Policy rules loaded from %s", path)
+                return rules
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.warning("Failed to load policy_rules.json: %s", exc)
+
+    _load_policy_rules._cache = {}  # type: ignore[attr-defined]
+    return {}
+
+
+def _apply_policy_rules(
+    input_text: str,
+    industry: str,
+) -> Dict[str, Any]:
+    """
+    Deterministic policy engine — matches input against industry-specific
+    keyword rules from config/policy_rules.json.
+
+    Returns:
+        {
+            "policy_decision": "allow" | "rewrite" | "escalate" | None,
+            "matched_rules": ["matched phrase", ...],
+            "risk_floor": float (0.0 if no match),
+        }
+    """
+    rules = _load_policy_rules()
+    if not rules:
+        return {"policy_decision": None, "matched_rules": [], "risk_floor": 0.0}
+
+    industries = rules.get("industries", {})
+    industry_rules = industries.get(industry, industries.get("general", {}))
+    risk_weights = rules.get("risk_weights", {})
+
+    text_lower = input_text.lower()
+    matched_rules: list[str] = []
+
+    # Check escalate keywords first (highest priority)
+    for phrase in industry_rules.get("escalate", []):
+        if phrase.lower() in text_lower:
+            matched_rules.append(phrase)
+            return {
+                "policy_decision": "escalate",
+                "matched_rules": matched_rules,
+                "risk_floor": risk_weights.get("escalate_keyword_match", 0.75),
+            }
+
+    # Check rewrite keywords
+    for phrase in industry_rules.get("rewrite", []):
+        if phrase.lower() in text_lower:
+            matched_rules.append(phrase)
+
+    if matched_rules:
+        return {
+            "policy_decision": "rewrite",
+            "matched_rules": matched_rules,
+            "risk_floor": risk_weights.get("rewrite_keyword_match", 0.45),
+        }
+
+    # Check allow keywords (informational — doesn't override other signals)
+    for phrase in industry_rules.get("allow_keywords", []):
+        if phrase.lower() in text_lower:
+            matched_rules.append(phrase)
+
+    return {
+        "policy_decision": "allow" if matched_rules else None,
+        "matched_rules": matched_rules,
+        "risk_floor": 0.0,
     }
 
 
@@ -1121,18 +1191,41 @@ def evaluate_prompt(input_text: str, context: Optional[Dict[str, Any]] = None) -
     if input_risk == "medium":
         violations.append("suspicious_intent")
 
-    # Check for safety tag patterns (authority, manipulation, etc.)
+    # Run safety_layer pre-classification (authority, manipulation, dependency, escalation)
+    safety_tags: list[str] = []
     try:
-        from risk_scoring import detect_sensitive_topic
+        from safety_layer import tag_input, detect_sensitive_topic
+        safety_tags = tag_input(input_text)
+        for tag in safety_tags:
+            if tag not in violations:
+                violations.append(tag)
         topic = detect_sensitive_topic(input_text)
         if topic:
             violations.append(topic)
     except ImportError:
-        pass
+        try:
+            from risk_scoring import detect_sensitive_topic
+            topic = detect_sensitive_topic(input_text)
+            if topic:
+                violations.append(topic)
+        except ImportError:
+            pass
 
     # --- Score with active scorer ---
     scorer_result = active_scorer.score(input_text, input_text)
     risk_score = scorer_result.score
+
+    # --- Policy engine (deterministic rules from config/policy_rules.json) ---
+    industry = context.get("industry", "general")
+    policy = _apply_policy_rules(input_text, industry)
+    if policy["matched_rules"]:
+        for rule in policy["matched_rules"]:
+            label = f"policy:{rule}"
+            if label not in violations:
+                violations.append(label)
+    # Policy risk floor overrides scorer if higher
+    if policy["risk_floor"] > risk_score:
+        risk_score = policy["risk_floor"]
 
     # Add scorer-detected violations
     for driver in scorer_result.drivers:
@@ -1141,13 +1234,25 @@ def evaluate_prompt(input_text: str, context: Optional[Dict[str, Any]] = None) -
             if tag not in violations:
                 violations.append(tag)
 
-    # --- Apply environment multiplier ---
+    # --- Apply multipliers from policy_rules.json risk_weights ---
+    rules = _load_policy_rules()
+    weights = rules.get("risk_weights", {})
+
     if context.get("environment") == "production":
-        risk_score = min(risk_score * 1.10, 1.0)
+        multiplier = weights.get("production_environment_multiplier", 1.10)
+        risk_score = min(risk_score * multiplier, 1.0)
+
+    if len(violations) > 1:
+        multiplier = weights.get("multiple_violations_multiplier", 1.15)
+        risk_score = min(risk_score * multiplier, 1.0)
 
     # --- Keyword match floors (ensure detected terms affect the decision) ---
     if input_risk == "medium":
         risk_score = max(risk_score, 0.45)  # push into rewrite band
+
+    # --- Safety tag floor — any tag from safety_layer triggers at least rewrite ---
+    if safety_tags and risk_score < 0.4:
+        risk_score = max(risk_score, 0.40)  # at minimum, rewrite
 
     # --- Decision from thresholds: <0.4 allow, 0.4-0.7 rewrite, >0.7 escalate ---
     if risk_score >= 0.7:
