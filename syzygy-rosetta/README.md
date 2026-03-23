@@ -106,11 +106,3 @@ It should print your repo path and then `True`. If it prints `False`, common fix
 - The repository changes that added `main.py` were not pulled yet.
 
 `run_api.py` first validates that `main.py` and `app` exist, then starts Uvicorn with an import string (`main:app`) plus `app_dir`, which keeps reload enabled without the warning about import strings.
-
-
-
-For recording guidance, use `docs/demo_checklist.md`.
-
-
-## Next Build Target (Docker)
-- After validating this API output on your PC, the next step is container packaging (`Dockerfile` + `docker-compose`) so anyone can run it consistently.
