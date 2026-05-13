@@ -1,39 +1,34 @@
-# Syzygy Rosetta — Origin Codebase
+# Syzygy Rosetta - Origin Codebase
 
-> **API-first AI governance middleware. Real-time. Provider agnostic. Full audit trail.**
+> API-first AI governance middleware MVP for evaluating submitted content through deterministic rules, safety tags, and risk scoring.
 
-[![License: CC BY-SA 4.0](https://img.shields.io/badge/License-CC%20BY--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-sa/4.0/)
+[![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
 [![Python 3.11](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100%2B-green.svg)](https://fastapi.tiangolo.com/)
 [![Status: MVP Development](https://img.shields.io/badge/Status-MVP%20Development-orange.svg)](https://github.com/Trivian-Technologies/syzygy-rosetta-originbase/blob/main)
 
----
+## What Is Syzygy Rosetta?
 
-## What is Syzygy Rosetta?
+Syzygy Rosetta is a FastAPI-based governance decision service. The current API accepts an `input` string plus optional context, evaluates it through safety tagging, deterministic policy rules, and risk scoring, then returns a structured decision:
 
-Syzygy Rosetta is an **API-first AI governance middleware**. It sits between your AI models and your production systems — evaluating every input and output through a deterministic policy engine and ML-based risk scoring pipeline before anything reaches users.
+- `allow`
+- `rewrite`
+- `escalate`
 
-It is not a model. It is not a chatbot. It is a governance decision engine.
+Current implementation note: the live `/evaluate` endpoint evaluates the submitted input. It does not currently accept a separate model output field.
 
-Every other AI safety solution governs the model. **Rosetta governs the output** — in real time, across any model, with a full audit trail built in.
-
+```text
+submitted input -> POST /evaluate -> allow / rewrite / escalate
+                         |
+                         +-> safety_layer.py
+                         +-> config/policy_rules.json
+                         +-> core/reflex.py
+                         +-> logs/evaluations.json
 ```
-AI Model Output  ──►  POST /evaluate  ──►  allow / rewrite / escalate
-                            │
-                    ┌───────┴────────┐
-                    │ safety_layer   │  pre-classification
-                    │ policy engine  │  deterministic rules
-                    │ risk_scoring   │  ML composite scorer
-                    └───────┬────────┘
-                            │
-                    logs/evaluations.json  (full audit trail)
-```
-
----
 
 ## API Response
 
-Every `POST /evaluate` call returns exactly these 8 fields:
+Every successful `POST /evaluate` response returns these 8 fields:
 
 ```json
 {
@@ -42,93 +37,120 @@ Every `POST /evaluate` call returns exactly these 8 fields:
   "confidence": 0.91,
   "violations": [],
   "rewrite": null,
-  "reasoning": "Input within acceptable parameters for financial context.",
+  "reasoning": "Input evaluated as low risk. Continue with normal processing.",
   "field_notes": [],
   "timestamp": "2026-03-21T14:32:00Z"
 }
 ```
 
-### Decision thresholds
+## Decision Thresholds
 
-| Risk Score | Decision | What happens |
+| Risk Score | Decision | Behavior |
 |---|---|---|
-| `< 0.4` | `allow` | Input passed through. `violations` is empty. |
-| `0.4 – 0.7` | `rewrite` | Soft violation. `rewrite` field contains corrected output. |
-| `> 0.7` | `escalate` | Hard violation. Routed to human review. |
-
----
+| `< 0.4` | `allow` | Input passes. `violations` is empty. |
+| `0.4 - 0.7` | `rewrite` | Input should be clarified or rewritten. `rewrite` is populated. |
+| `>= 0.7` | `escalate` | Input is routed to human review. `rewrite` is null. |
 
 ## File Structure
 
-```
+```text
 syzygy-rosetta-originbase/
-│
-├── app.py                  ← FastAPI entry point. POST /evaluate.
-├── reflex.py               ← Core governance engine. 8-step evaluation pipeline.
-├── risk_scoring.py         ← ML composite scorer. KeywordScorer + FeatureScorer + LLMScorer.
-├── safety_layer.py         ← Pre-classification. Tags: authority, manipulation, dependency, escalation.
-├── requirements.txt        ← All dependencies. pip install -r requirements.txt.
-├── Dockerfile              ← FROM python:3.11 → EXPOSE 8000 → uvicorn app:app
-│
-├── config/
-│   └── policy_rules.json   ← Deterministic rules. finance / healthcare / general.
-│
-├── logs/
-│   ├── .gitkeep
-│   └── evaluations.json    ← Auto-created. Appended on every POST /evaluate call.
-│
-└── tests/
-    └── test_evaluate.py    ← 10 test classes. 47 test methods.
+|
+|-- README.md
+|-- syzygy-rosetta-originbase.md
+|-- REPO_MISMATCH_AUDIT.md
+|
+`-- syzygy-rosetta/
+    |-- app.py                     FastAPI entry point
+    |-- run_api.py                 local development launcher
+    |-- safety_layer.py            pre-classification tags and sensitive-topic detection
+    |-- requirements.txt           Python dependencies
+    |-- Dockerfile                 container entrypoint for app:app
+    |
+    |-- config/
+    |   `-- policy_rules.json      deterministic industry rules
+    |
+    |-- core/
+    |   |-- reflex.py              governance decision engine
+    |   |-- risk_scoring.py        weighted feature scoring utilities
+    |   |-- constants.py           invariant/config constants
+    |   |-- invariants.json        invariant metadata
+    |   `-- resonators_mock.py     legacy/simple reflex mock
+    |
+    |-- docs/
+    |   `-- demo_checklist.md
+    |
+    |-- example/
+    |   `-- basic_usage.py
+    |
+    |-- logs/
+    |   `-- evaluations.json       runtime audit log
+    |
+    `-- tests/
+        |-- test_evaluate.py
+        `-- test_healthz.py
 ```
-
----
 
 ## Evaluation Pipeline
 
-Every `POST /evaluate` call runs through 8 steps:
+Every `POST /evaluate` call currently follows this path:
 
-1. **Parse request** — splits `input` and `context` (environment, industry, user_id). Applies defaults if context is missing.
-2. **Breath + Mirror** — `breath_sync()` creates a processing boundary. `mirror()` hashes input and performs structural analysis.
-3. **Safety layer pre-classification** — `safety_layer.tag_input()` scans for authority, manipulation, dependency, and escalation patterns. Non-blocking — labels only.
-4. **Policy engine** — `_apply_policy_rules()` loads `config/policy_rules.json` and matches against industry-specific keyword lists. Sets risk floor if match found (escalate = 0.75, rewrite = 0.45).
-5. **Composite scorer** — blends three scorers: `KeywordScorer` (30%), `FeatureScorer` (70%), `LLMScorer` (0% — inactive until API key set).
-6. **Final risk score** — highest value from composite score, safety tag floors, policy floors, and high-risk overrides. Multiplied by environment and violation multipliers.
-7. **Decision** — threshold applied to final risk score.
-8. **Response + Log** — 8-field response assembled and returned. Evaluation appended to `logs/evaluations.json`.
+1. FastAPI validates `input` and optional `context`.
+2. `evaluate_prompt()` runs a breath pause and mirror step.
+3. `safety_layer.tag_input()` labels authority, manipulation, dependency, and escalation patterns.
+4. `detect_sensitive_topic()` checks self-harm, violence, and sexual-content patterns.
+5. `_apply_policy_rules()` checks industry-specific rules from `config/policy_rules.json`.
+6. The active scorer computes risk and confidence.
+7. Risk floors and multipliers are applied.
+8. The API returns the 8-field response and appends an entry to `logs/evaluations.json`.
 
----
+Current implementation note: because of the current import layout, `/introspect` may report `KeywordScorer` as the active scorer. The intended richer scorer path is tracked in `REPO_MISMATCH_AUDIT.md`.
 
 ## Industry Context
 
 Pass `industry` in the request context to activate sector-specific policy rules:
 
-| Industry | Policy ruleset |
+| Industry | Policy Rules |
 |---|---|
-| `finance` | Flags coercive financial instructions, guaranteed returns claims, compliance bypass |
-| `healthcare` | Flags unsafe medication directives, system override attempts, unauthorized access |
-| `general` | Flags jailbreak attempts, system prompt injection, authority override patterns |
+| `finance` | Flags coercive financial instructions, guaranteed-return claims, compliance bypass, and market misconduct. |
+| `healthcare` | Flags unsafe medication directives, system override attempts, and unauthorized access. |
+| `general` | Flags jailbreak attempts, system prompt injection, unsafe security bypass requests, and harmful instructions. |
 
-Production environment multiplier: `×1.10`. Multiple violations multiplier: `×1.15`.
-
----
+Production environment multiplier: `x1.10`. Multiple violations multiplier: `x1.15`.
 
 ## Quick Start
 
 ### Requirements
 
-- Docker Desktop
 - Python 3.11+
+- Docker Desktop, only if running the container
 
-### Run with Docker
+### Run Locally
+
+Run these commands from `syzygy-rosetta-originbase/syzygy-rosetta`:
 
 ```bash
-git clone https://github.com/Trivian-Technologies/syzygy-rosetta-originbase.git
-cd syzygy-rosetta-originbase
+python -m pip install -r requirements.txt
+python run_api.py
+```
+
+The local server starts at:
+
+```text
+http://127.0.0.1:8000
+```
+
+### Run With Docker
+
+The Dockerfile currently lives inside `syzygy-rosetta/`, so build from that directory:
+
+```bash
+cd syzygy-rosetta
 docker build -t rosetta .
 docker run -p 8000:8000 rosetta
 ```
 
-### Test the endpoint
+### Test The Endpoint
 
 ```bash
 curl -X POST http://localhost:8000/evaluate \
@@ -142,42 +164,33 @@ curl -X POST http://localhost:8000/evaluate \
   }'
 ```
 
-Expected response:
+Example response shape:
 
 ```json
 {
   "decision": "allow",
-  "risk_score": 0.08,
-  "confidence": 0.94,
+  "risk_score": 0.14,
+  "confidence": 0.5,
   "violations": [],
   "rewrite": null,
-  "reasoning": "Input within acceptable parameters for financial context.",
-  "field_notes": [],
-  "timestamp": "2026-03-21T14:32:00Z"
+  "reasoning": "Input evaluated as low risk. Continue with normal processing.",
+  "field_notes": [
+    "FIELD_NOTE [2026-04-25T16:41:48Z]: mirror invoked",
+    "INTERNAL_NOTE [2026-04-25T16:41:48Z]"
+  ],
+  "timestamp": "2026-04-25T16:41:48Z"
 }
 ```
 
-> **Response time:** [TO BE UPDATED — pending Noah's re-test after Docker wrap. Baseline: 4.86ms average across 7 tests on pre-rewrite codebase.]
+### Explore Via Swagger UI
 
-### Explore via Swagger UI
-
-```
+```text
 http://localhost:8000/docs
 ```
 
----
-
-## LLMScorer
-
-The `LLMScorer` is fully written and ready to activate. When active, it shifts scorer weights to `KeywordScorer 15%`, `FeatureScorer 35%`, `LLMScorer 50%` — upgrading risk scoring from keyword-based to full LLM semantic inference across five dimensions: relevance, coherence, safety, uncertainty, and autonomy.
-
-To activate, set the `ANTHROPIC_API_KEY` environment variable before running the container.
-
----
-
 ## Evaluation Log
 
-Every `POST /evaluate` call appends one entry to `logs/evaluations.json`:
+Every `POST /evaluate` call appends one entry to `syzygy-rosetta/logs/evaluations.json`:
 
 ```json
 {
@@ -196,43 +209,30 @@ Every `POST /evaluate` call appends one entry to `logs/evaluations.json`:
 }
 ```
 
-Logs persist across container restarts. The full log is your audit trail.
-
----
+Current implementation note: the API response includes `reasoning` and `field_notes`, but the log entry does not currently include those fields.
 
 ## Run Tests
 
+Run from `syzygy-rosetta-originbase/syzygy-rosetta`:
+
 ```bash
-pip install -r requirements.txt
-pytest tests/test_evaluate.py -v
+python -m pytest tests -q
 ```
 
-10 test classes. 47 test methods. Covers schema validation, all three decision paths, 422 on malformed input, industry-specific policy rules, and evaluation logging.
+At the time of the audit, this produced:
 
----
+```text
+47 passed, 1 skipped
+```
 
 ## Repository Role
 
-This is the **origin codebase** for Syzygy Rosetta. It contains the foundational implementation of the governance engine. For the SDK, sandbox environment, and full API documentation see the other repositories in the [Trivian Technologies organization](https://github.com/Trivian-Technologies).
+This is the origin codebase for Syzygy Rosetta. It contains the foundational MVP implementation of the governance engine. Active development and refactoring are ongoing.
 
----
-
-## Documentation
-
-Full documentation is available at the [Syzygy Rosetta Docs](https://github.com/Trivian-Technologies/syzygy-rosetta-docs) repository and on GitBook.
-
----
+For known mismatches and cleanup work, see `REPO_MISMATCH_AUDIT.md`.
 
 ## License
 
-Licensed under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
+Licensed under [AGPL-3.0-or-later](https://www.gnu.org/licenses/agpl-3.0.html).
 
 Derived from the Syzygy Rosetta v1.0 protocol by Sarasha Elion (Trivian Institute).
-
----
-
-## Organization
-
-Part of the [Trivian Technologies](https://github.com/Trivian-Technologies) organization.
-
-**Website:** [triviantech.com](https://triviantech.com) | **X:** [@TrivianOS](https://x.com/TrivianOS) | **LinkedIn:** [Trivian Technologies](https://www.linkedin.com/company/awakening-the-architect) | **Contact:** se@trivianinstitute.org

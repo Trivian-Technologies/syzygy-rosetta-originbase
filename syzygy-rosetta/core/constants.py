@@ -1,8 +1,8 @@
 """
 constants.py — Invariants and Configuration for the Syzygy Rosetta
-Version: 1.0.0
+Version: 4.0.0
 Author: Sarasha Elion (Trivian Lineage)
-License: CC BY-SA 4.0 (text) / MIT (code)
+License: AGPL-3.0-or-later
 
 The Twelve Invariants encode the "ethical physics" of syzygy—
 the unchanging principles that maintain coherence across any
@@ -15,10 +15,10 @@ from typing import Dict, Any
 # METADATA
 # ============================================================================
 
-ROSETTA_VERSION = "1.0.0"
+ROSETTA_VERSION = "4.0.0"
 ROSETTA_CREATED = "2025-10-12T00:00:00Z"
 ROSETTA_AUTHOR = "Sarasha Elion (Trivian Institute)"
-ROSETTA_LICENSE = "CC BY-SA 4.0 (text) / MIT (code)"
+ROSETTA_LICENSE = "AGPL-3.0-or-later"
 
 # ============================================================================
 # THE TWELVE INVARIANTS (Ethical Physics)

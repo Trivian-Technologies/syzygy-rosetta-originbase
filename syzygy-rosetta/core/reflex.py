@@ -47,7 +47,7 @@ logger = logging.getLogger("syzygy.reflex")
 
 # Try importing from constants.py first (canonical config source)
 try:
-    from constants import (
+    from .constants import (
         CONFIG as _CONSTANTS_CONFIG,
         INVARIANTS as _CONSTANTS_INVARIANTS,
     )
@@ -515,7 +515,7 @@ class FeatureScorer(BaseScorer):
 
     def score(self, input_text: str, response_text: str, **kwargs: Any) -> ScorerResult:
         try:
-            from risk_scoring import extract_and_score, detect_sensitive_topic
+            from .risk_scoring import extract_and_score, detect_sensitive_topic
         except ImportError:
             logger.warning("risk_scoring.py not found; falling back to KeywordScorer.")
             return KeywordScorer().score(input_text, response_text, **kwargs)
@@ -769,7 +769,7 @@ def build_default_scorer() -> BaseScorer:
     # Check if risk_scoring module is available
     has_feature_scorer = False
     try:
-        import risk_scoring as _rs  # noqa: F401
+        from . import risk_scoring as _rs  # noqa: F401
         has_feature_scorer = True
     except ImportError:
         pass
@@ -1003,7 +1003,7 @@ def self_reflect() -> Dict[str, Any]:
 
     return {
         "timestamp": _utcnow_iso(),
-        "version": "3.0.0",
+        "version": "4.0.0",
         "source_lines": source_lines,
         "function_count": len(functions),
         "function_names": functions,
@@ -1019,7 +1019,7 @@ def self_reflect() -> Dict[str, Any]:
 
 
 # ============================================================================
-# 8. GOVERNANCE GATE — Entry-Point for main.py
+# 8. GOVERNANCE GATE — Entry-Point for app.py
 # ============================================================================
 
 def _classify_input_risk(text: str) -> Literal["low", "medium", "high"]:
@@ -1076,18 +1076,16 @@ def _load_policy_rules() -> Dict[str, Any]:
     if hasattr(_load_policy_rules, "_cache"):
         return _load_policy_rules._cache  # type: ignore[attr-defined]
 
-    for path in [
-        Path(__file__).parent / "config" / "policy_rules.json",
-        Path("config") / "policy_rules.json",
-    ]:
-        if path.exists():
-            try:
-                rules = json.loads(path.read_text(encoding="utf-8"))
-                _load_policy_rules._cache = rules  # type: ignore[attr-defined]
-                logger.info("Policy rules loaded from %s", path)
-                return rules
-            except (json.JSONDecodeError, OSError) as exc:
-                logger.warning("Failed to load policy_rules.json: %s", exc)
+    app_root = Path(__file__).resolve().parent.parent
+    path = app_root / "config" / "policy_rules.json"
+    if path.exists():
+        try:
+            rules = json.loads(path.read_text(encoding="utf-8"))
+            _load_policy_rules._cache = rules  # type: ignore[attr-defined]
+            logger.info("Policy rules loaded from %s", path)
+            return rules
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("Failed to load policy_rules.json: %s", exc)
 
     _load_policy_rules._cache = {}  # type: ignore[attr-defined]
     return {}
@@ -1204,7 +1202,7 @@ def evaluate_prompt(input_text: str, context: Optional[Dict[str, Any]] = None) -
             violations.append(topic)
     except ImportError:
         try:
-            from risk_scoring import detect_sensitive_topic
+            from .risk_scoring import detect_sensitive_topic
             topic = detect_sensitive_topic(input_text)
             if topic:
                 violations.append(topic)
