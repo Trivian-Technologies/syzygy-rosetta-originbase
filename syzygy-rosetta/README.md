@@ -11,13 +11,14 @@ Available routes:
 - `GET /` returns service metadata.
 - `GET /healthz` returns `{"status": "ok"}`.
 - `GET /introspect` returns reflex-engine metadata.
-- `POST /evaluate` evaluates submitted input and returns a governance decision.
+- `POST /evaluate` evaluates user input plus optional model output and returns a governance decision.
 
 ## Request Shape
 
 ```json
 {
   "input": "Hello Rosetta",
+  "output": "Hello. How can I help?",
   "context": {
     "user_id": null,
     "environment": "staging",
@@ -26,7 +27,7 @@ Available routes:
 }
 ```
 
-`context` is optional. Defaults are:
+`output` and `context` are optional. Defaults are:
 
 - `user_id`: `null`
 - `environment`: `staging`
@@ -52,7 +53,7 @@ Valid industries:
   "confidence": 0.5,
   "violations": [],
   "rewrite": null,
-  "reasoning": "Input evaluated as low risk. Continue with normal processing.",
+  "reasoning": "Interaction evaluated as low risk. Continue with normal processing.",
   "field_notes": [],
   "timestamp": "2026-04-25T16:41:48Z"
 }
@@ -101,7 +102,7 @@ docker run -p 8000:8000 rosetta
 ```bat
 curl -X POST http://127.0.0.1:8000/evaluate ^
   -H "Content-Type: application/json" ^
-  -d "{\"input\":\"Hello Rosetta\",\"context\":{\"environment\":\"staging\",\"industry\":\"general\"}}"
+  -d "{\"input\":\"Hello Rosetta\",\"output\":\"Hello. How can I help?\",\"context\":{\"environment\":\"staging\",\"industry\":\"general\"}}"
 ```
 
 ## Run Tests
@@ -115,13 +116,12 @@ python -m pytest tests -q
 At the time of the audit, the suite reported:
 
 ```text
-47 passed, 1 skipped
+54 passed
 ```
 
 ## Current Implementation Notes
 
-- `/evaluate` currently accepts an input string, not a separate model output.
+- `/evaluate` accepts a required input string and optional model output string.
 - The response contract is the 8-field schema shown above.
 - Runtime evaluations append entries to `logs/evaluations.json`.
 - Known implementation mismatches are tracked in `../REPO_MISMATCH_AUDIT.md`.
-

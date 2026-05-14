@@ -9,21 +9,19 @@
 
 ## What Is Syzygy Rosetta?
 
-Syzygy Rosetta is a FastAPI-based governance decision service. The current API accepts an `input` string plus optional context, evaluates it through safety tagging, deterministic policy rules, and risk scoring, then returns a structured decision:
+Syzygy Rosetta is a FastAPI-based governance decision service. The current API accepts a required user/customer `input`, an optional model `output`, and optional context. It evaluates the interaction through safety tagging, deterministic policy rules, and risk scoring, then returns a structured decision:
 
 - `allow`
 - `rewrite`
 - `escalate`
 
-Current implementation note: the live `/evaluate` endpoint evaluates the submitted input. It does not currently accept a separate model output field.
-
 ```text
-submitted input -> POST /evaluate -> allow / rewrite / escalate
-                         |
-                         +-> safety_layer.py
-                         +-> config/policy_rules.json
-                         +-> core/reflex.py
-                         +-> logs/evaluations.json
+user input + optional model output -> POST /evaluate -> allow / rewrite / escalate
+                                                  |
+                                                  +-> safety_layer.py
+                                                  +-> config/policy_rules.json
+                                                  +-> core/reflex.py
+                                                  +-> logs/evaluations.json
 ```
 
 ## API Response
@@ -37,7 +35,7 @@ Every successful `POST /evaluate` response returns these 8 fields:
   "confidence": 0.91,
   "violations": [],
   "rewrite": null,
-  "reasoning": "Input evaluated as low risk. Continue with normal processing.",
+  "reasoning": "Interaction evaluated as low risk. Continue with normal processing.",
   "field_notes": [],
   "timestamp": "2026-03-21T14:32:00Z"
 }
@@ -47,9 +45,9 @@ Every successful `POST /evaluate` response returns these 8 fields:
 
 | Risk Score | Decision | Behavior |
 |---|---|---|
-| `< 0.4` | `allow` | Input passes. `violations` is empty. |
-| `0.4 - 0.7` | `rewrite` | Input should be clarified or rewritten. `rewrite` is populated. |
-| `>= 0.7` | `escalate` | Input is routed to human review. `rewrite` is null. |
+| `< 0.4` | `allow` | Interaction passes. `violations` is empty. |
+| `0.4 - 0.7` | `rewrite` | Input or output should be clarified or rewritten. `rewrite` is populated. |
+| `>= 0.7` | `escalate` | Interaction is routed to human review. `rewrite` is null. |
 
 ## File Structure
 
@@ -95,16 +93,14 @@ syzygy-rosetta-originbase/
 
 Every `POST /evaluate` call currently follows this path:
 
-1. FastAPI validates `input` and optional `context`.
+1. FastAPI validates required `input`, optional `output`, and optional `context`.
 2. `evaluate_prompt()` runs a breath pause and mirror step.
-3. `safety_layer.tag_input()` labels authority, manipulation, dependency, and escalation patterns.
-4. `detect_sensitive_topic()` checks self-harm, violence, and sexual-content patterns.
-5. `_apply_policy_rules()` checks industry-specific rules from `config/policy_rules.json`.
-6. The active scorer computes risk and confidence.
+3. `safety_layer.tag_input()` labels authority, manipulation, dependency, and escalation patterns on input and output.
+4. `detect_sensitive_topic()` checks self-harm, violence, and sexual-content patterns on input and output.
+5. `_apply_policy_rules()` checks industry-specific rules from `config/policy_rules.json` on input and output.
+6. The active scorer computes risk and confidence for the input-output pair.
 7. Risk floors and multipliers are applied.
 8. The API returns the 8-field response and appends an entry to `logs/evaluations.json`.
-
-Current implementation note: because of the current import layout, `/introspect` may report `KeywordScorer` as the active scorer. The intended richer scorer path is tracked in `REPO_MISMATCH_AUDIT.md`.
 
 ## Industry Context
 
@@ -157,6 +153,7 @@ curl -X POST http://localhost:8000/evaluate \
   -H "Content-Type: application/json" \
   -d '{
     "input": "Summarize the key risks in this portfolio.",
+    "output": "The portfolio appears diversified, but review concentration and liquidity risks.",
     "context": {
       "environment": "staging",
       "industry": "finance"
@@ -173,7 +170,7 @@ Example response shape:
   "confidence": 0.5,
   "violations": [],
   "rewrite": null,
-  "reasoning": "Input evaluated as low risk. Continue with normal processing.",
+  "reasoning": "Interaction evaluated as low risk. Continue with normal processing.",
   "field_notes": [
     "FIELD_NOTE [2026-04-25T16:41:48Z]: mirror invoked",
     "INTERNAL_NOTE [2026-04-25T16:41:48Z]"
@@ -196,11 +193,14 @@ Every `POST /evaluate` call appends one entry to `syzygy-rosetta/logs/evaluation
 {
   "timestamp": "2026-03-21T14:32:00Z",
   "input": "the original input string",
+  "output": "the model output string or null",
   "decision": "allow | rewrite | escalate",
   "risk_score": 0.85,
   "confidence": 0.91,
   "violations": ["violation_label"],
   "rewrite": "rewritten string or null",
+  "reasoning": "decision explanation",
+  "field_notes": [],
   "context": {
     "user_id": "string or null",
     "environment": "production | staging",
@@ -208,8 +208,6 @@ Every `POST /evaluate` call appends one entry to `syzygy-rosetta/logs/evaluation
   }
 }
 ```
-
-Current implementation note: the API response includes `reasoning` and `field_notes`, but the log entry does not currently include those fields.
 
 ## Run Tests
 
@@ -222,7 +220,7 @@ python -m pytest tests -q
 At the time of the audit, this produced:
 
 ```text
-47 passed, 1 skipped
+54 passed
 ```
 
 ## Repository Role

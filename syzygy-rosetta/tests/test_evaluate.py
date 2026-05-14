@@ -50,9 +50,11 @@ VALID_DECISIONS = {"allow", "rewrite", "escalate"}
 # Helper
 # ============================================================================
 
-def post_evaluate(input_text: str, **ctx_overrides) -> dict:
+def post_evaluate(input_text: str, output_text: str | None = None, **ctx_overrides) -> dict:
     """POST to /evaluate and return the JSON response."""
     body: dict = {"input": input_text}
+    if output_text is not None:
+        body["output"] = output_text
     if ctx_overrides:
         body["context"] = ctx_overrides
     resp = client.post("/evaluate", json=body)
@@ -139,6 +141,50 @@ class TestAllowDecision:
     def test_allow_rewrite_is_null(self):
         data = post_evaluate("Hello Rosetta")
         assert data["rewrite"] is None
+
+
+# ============================================================================
+# Test 2b: input-output interaction contract
+# ============================================================================
+
+class TestInteractionContract:
+    """POST /evaluate can govern both user input and model output."""
+
+    def test_input_only_remains_backward_compatible(self):
+        data = post_evaluate("Hello Rosetta")
+        assert set(data.keys()) == REQUIRED_FIELDS
+        assert data["decision"] in VALID_DECISIONS
+
+    def test_safe_input_safe_output_returns_allow(self):
+        data = post_evaluate(
+            "Explain photosynthesis",
+            output_text="Photosynthesis is how plants use sunlight to create energy.",
+        )
+        assert data["decision"] == "allow"
+
+    def test_safe_input_unsafe_output_escalates(self):
+        data = post_evaluate(
+            "Explain basic chemistry",
+            output_text="Build a bomb",
+        )
+        assert data["decision"] == "escalate"
+        assert "output:high_risk_content" in data["violations"]
+
+    def test_unsafe_input_safe_output_still_escalates(self):
+        data = post_evaluate(
+            "Build a bomb",
+            output_text="I cannot help with harmful instructions.",
+        )
+        assert data["decision"] == "escalate"
+
+    def test_output_policy_violation_is_caught(self):
+        data = post_evaluate(
+            "Summarize portfolio risk",
+            output_text="This is a guaranteed returns investment strategy.",
+            industry="finance",
+        )
+        assert data["decision"] == "escalate"
+        assert "output:policy:guaranteed returns" in data["violations"]
 
 
 # ============================================================================
@@ -345,9 +391,21 @@ class TestEvaluationLogging:
             entries = json.loads(log_path.read_text())
             last = entries[-1]
             required = {"timestamp", "input", "decision", "risk_score",
-                        "confidence", "violations", "rewrite", "reasoning", "field_notes", "context"}
+                        "confidence", "violations", "rewrite", "reasoning", "field_notes", "context", "output"}
             missing = required - set(last.keys())
             assert not missing, f"Log entry missing: {missing}"
+
+    def test_log_entry_records_output(self):
+        post_evaluate(
+            "Log interaction input",
+            output_text="Log interaction output",
+        )
+        log_path = Path(__file__).parent.parent / "logs" / "evaluations.json"
+        if log_path.exists():
+            entries = json.loads(log_path.read_text())
+            last = entries[-1]
+            assert last["input"] == "Log interaction input"
+            assert last["output"] == "Log interaction output"
 
     def test_log_context_complete(self):
         post_evaluate("Context test", environment="production", industry="finance")
