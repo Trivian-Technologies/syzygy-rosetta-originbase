@@ -1,0 +1,54 @@
+# Git and local metadata
+.git
+.gitignore
+.dockerignore
+.vscode
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+syzygy-rosetta/venv/
+
+# Test and coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+pytest-cache-files-*/
+syzygy-rosetta/pytest-cache-files-*/
+
+# Runtime logs and generated state
+*.log
+logs/*.json
+syzygy-rosetta/logs/*.json
+
+# Packaging/build artifacts
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+

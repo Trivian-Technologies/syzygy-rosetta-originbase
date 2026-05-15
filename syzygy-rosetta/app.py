@@ -43,6 +43,8 @@ def _write_eval_log(
 
     Append mode — never overwrites. File is a JSON array.
     Persists across container restarts (Docker volume).
+
+    **Added "reasoning" and "field_notes" to be written in the audit logs
     """
     entry = {
         "timestamp": result.get("timestamp", ""),
@@ -52,6 +54,8 @@ def _write_eval_log(
         "confidence": result.get("confidence", 0.0),
         "violations": result.get("violations", []),
         "rewrite": result.get("rewrite"),
+        "reasoning": result.get("reasoning", ""),
+        "field_notes": result.get("field_notes", []),
         "context": {
             "user_id": context.get("user_id"),
             "environment": context.get("environment", "staging"),

@@ -345,7 +345,7 @@ class TestEvaluationLogging:
             entries = json.loads(log_path.read_text())
             last = entries[-1]
             required = {"timestamp", "input", "decision", "risk_score",
-                        "confidence", "violations", "rewrite", "context"}
+                        "confidence", "violations", "rewrite", "reasoning", "field_notes", "context"}
             missing = required - set(last.keys())
             assert not missing, f"Log entry missing: {missing}"
 
