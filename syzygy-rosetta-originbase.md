@@ -8,7 +8,7 @@
 
 ## What Is Syzygy Rosetta?
 
-Syzygy Rosetta is an API-first governance decision service. The current MVP accepts submitted input, evaluates it with deterministic policy rules and risk-scoring logic, and returns a structured decision.
+Syzygy Rosetta is an API-first governance decision service. The current MVP accepts user/customer input, optional model output, and optional context, then evaluates the interaction with deterministic policy rules and risk-scoring logic.
 
 It is not a model. It is not a chatbot. It is a decision engine.
 
@@ -21,7 +21,7 @@ Every successful evaluation returns this response shape:
   "confidence": 0.91,
   "violations": [],
   "rewrite": null,
-  "reasoning": "Input evaluated as low risk. Continue with normal processing.",
+  "reasoning": "Interaction evaluated as low risk. Continue with normal processing.",
   "field_notes": [],
   "timestamp": "2026-03-10T14:32:00Z"
 }
@@ -67,6 +67,7 @@ Test `POST /evaluate` with:
 ```json
 {
   "input": "Hello Rosetta",
+  "output": "Hello. How can I help?",
   "context": {
     "environment": "staging",
     "industry": "general"

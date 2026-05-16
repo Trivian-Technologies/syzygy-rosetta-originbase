@@ -1151,13 +1151,20 @@ def _apply_policy_rules(
     }
 
 
-def evaluate_prompt(input_text: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def evaluate_prompt(
+    input_text: str,
+    context: Optional[Dict[str, Any]] = None,
+    output_text: Optional[str] = None,
+) -> Dict[str, Any]:
     """
-    Governance decision for a single input — the function app.py calls.
+    Current contract: evaluates input alone or an input-output interaction.
+
+    Governance decision for the request that app.py calls.
 
     Changed from v3:
-      - Signature: (prompt) → (input_text, context)
+      - Signature: (prompt) -> (input_text, context, output_text)
       - context carries: user_id, environment, industry
+      - output_text is optional for backward compatibility
       - Returns 8-field schema: decision, risk_score, confidence,
         violations, rewrite, reasoning, field_notes, timestamp
       - Decision labels: allow | rewrite | escalate only
@@ -1165,13 +1172,16 @@ def evaluate_prompt(input_text: str, context: Optional[Dict[str, Any]] = None) -
       - Thresholds: <0.4 allow, 0.4-0.7 rewrite, >0.7 escalate
 
     Args:
-        input_text: Raw user input string.
+        input_text: Raw user/customer input string.
         context: Dict with user_id, environment, industry.
+        output_text: Optional model output to evaluate against the input.
 
     Returns:
         8-field governance decision dict.
     """
     context = context or {"user_id": None, "environment": "staging", "industry": "general"}
+    output_provided = output_text is not None
+    response_text = output_text if output_provided else input_text
     notes: list[str] = []
 
     # --- Ritual: Pause & Mirror ---
@@ -1179,38 +1189,58 @@ def evaluate_prompt(input_text: str, context: Optional[Dict[str, Any]] = None) -
     mirror_result = mirror(input_text)
     notes.append(mirror_result["note"])
 
-    # --- Input Risk Classification ---
+    # --- Input and output risk classification ---
     input_risk = _classify_input_risk(input_text)
+    output_risk = _classify_input_risk(response_text) if output_provided else "low"
 
     # --- Build violations list from safety tags ---
     violations: list[str] = []
+    def add_violation(label: str) -> None:
+        if label not in violations:
+            violations.append(label)
+
     if input_risk == "high":
-        violations.append("high_risk_content")
+        add_violation("high_risk_content")
     if input_risk == "medium":
-        violations.append("suspicious_intent")
+        add_violation("suspicious_intent")
+    if output_provided and output_risk == "high":
+        add_violation("output:high_risk_content")
+    if output_provided and output_risk == "medium":
+        add_violation("output:suspicious_intent")
 
     # Run safety_layer pre-classification (authority, manipulation, dependency, escalation)
     safety_tags: list[str] = []
+    output_safety_tags: list[str] = []
     try:
         from safety_layer import tag_input, detect_sensitive_topic
         safety_tags = tag_input(input_text)
         for tag in safety_tags:
-            if tag not in violations:
-                violations.append(tag)
+            add_violation(tag)
         topic = detect_sensitive_topic(input_text)
         if topic:
-            violations.append(topic)
+            add_violation(topic)
+        if output_provided:
+            output_safety_tags = tag_input(response_text)
+            for tag in output_safety_tags:
+                add_violation(f"output:{tag}")
+            output_topic = detect_sensitive_topic(response_text)
+            if output_topic:
+                add_violation(f"output:{output_topic}")
     except ImportError:
         try:
             from .risk_scoring import detect_sensitive_topic
             topic = detect_sensitive_topic(input_text)
             if topic:
-                violations.append(topic)
+                add_violation(topic)
+            if output_provided:
+                output_topic = detect_sensitive_topic(response_text)
+                if output_topic:
+                    add_violation(f"output:{output_topic}")
         except ImportError:
             pass
 
     # --- Score with active scorer ---
-    scorer_result = active_scorer.score(input_text, input_text)
+    scorer_result = active_scorer.score(input_text, response_text, context=context)
     risk_score = scorer_result.score
 
     # --- Policy engine (deterministic rules from config/policy_rules.json) ---
@@ -1219,18 +1249,24 @@ def evaluate_prompt(input_text: str, context: Optional[Dict[str, Any]] = None) -
     if policy["matched_rules"]:
         for rule in policy["matched_rules"]:
             label = f"policy:{rule}"
-            if label not in violations:
-                violations.append(label)
+            add_violation(label)
     # Policy risk floor overrides scorer if higher
     if policy["risk_floor"] > risk_score:
         risk_score = policy["risk_floor"]
+    output_policy = {"policy_decision": None, "matched_rules": [], "risk_floor": 0.0}
+    if output_provided:
+        output_policy = _apply_policy_rules(response_text, industry)
+        if output_policy["matched_rules"]:
+            for rule in output_policy["matched_rules"]:
+                add_violation(f"output:policy:{rule}")
+        if output_policy["risk_floor"] > risk_score:
+            risk_score = output_policy["risk_floor"]
 
     # Add scorer-detected violations
     for driver in scorer_result.drivers:
         if "high_risk" in driver or "anti_pattern" in driver or "manipulation" in driver:
             tag = driver.split(":")[0].strip() if ":" in driver else driver
-            if tag not in violations:
-                violations.append(tag)
+            add_violation(tag)
 
     # --- Apply multipliers from policy_rules.json risk_weights ---
     rules = _load_policy_rules()
@@ -1245,11 +1281,11 @@ def evaluate_prompt(input_text: str, context: Optional[Dict[str, Any]] = None) -
         risk_score = min(risk_score * multiplier, 1.0)
 
     # --- Keyword match floors (ensure detected terms affect the decision) ---
-    if input_risk == "medium":
+    if input_risk == "medium" or output_risk == "medium":
         risk_score = max(risk_score, 0.45)  # push into rewrite band
 
     # --- Safety tag floor — any tag from safety_layer triggers at least rewrite ---
-    if safety_tags and risk_score < 0.4:
+    if (safety_tags or output_safety_tags) and risk_score < 0.4:
         risk_score = max(risk_score, 0.40)  # at minimum, rewrite
 
     # --- Decision from thresholds: <0.4 allow, 0.4-0.7 rewrite, >0.7 escalate ---
@@ -1261,7 +1297,7 @@ def evaluate_prompt(input_text: str, context: Optional[Dict[str, Any]] = None) -
         decision = "allow"
 
     # --- For high-risk keyword hits, force escalate regardless of score ---
-    if input_risk == "high":
+    if input_risk == "high" or output_risk == "high":
         decision = "escalate"
         risk_score = max(risk_score, 0.75)
 
@@ -1271,7 +1307,8 @@ def evaluate_prompt(input_text: str, context: Optional[Dict[str, Any]] = None) -
     # --- Rewrite field: NOT null when decision=rewrite, null otherwise ---
     rewrite_text: str | None = None
     if decision == "rewrite":
-        rewrite_text = f"Clarify intent and safety constraints for: {' '.join(input_text.split())}"
+        target_text = response_text if output_provided else input_text
+        rewrite_text = f"Clarify intent and safety constraints for: {' '.join(target_text.split())}"
 
     # --- Violations: must be [] on allow, non-empty on rewrite/escalate ---
     if decision == "allow":
@@ -1281,18 +1318,22 @@ def evaluate_prompt(input_text: str, context: Optional[Dict[str, Any]] = None) -
 
     # --- Reasoning ---
     if decision == "allow":
-        reasoning = "Input evaluated as low risk. Continue with normal processing."
+        reasoning = "Interaction evaluated as low risk. Continue with normal processing."
     elif decision == "rewrite":
-        reasoning = f"Input flagged for review (risk: {risk_score:.2f}). Rewrite recommended before fulfillment."
+        reasoning = f"Interaction flagged for review (risk: {risk_score:.2f}). Rewrite recommended before fulfillment."
     else:
-        reasoning = f"Input escalated to human review (risk: {risk_score:.2f}). Automated response withheld."
+        reasoning = f"Interaction escalated to human review (risk: {risk_score:.2f}). Automated response withheld."
 
     # --- Field note ---
     note = field_note(
         f"Evaluation complete: {decision} (risk={risk_score:.2f}, conf={confidence:.2f})",
         category="coherence_success" if decision == "allow" else "coherence_failure",
         severity="info" if decision == "allow" else "warning" if decision == "rewrite" else "error",
-        context={"scoring": scorer_result.to_dict(), "input_risk": input_risk},
+        context={
+            "scoring": scorer_result.to_dict(),
+            "input_risk": input_risk,
+            "output_risk": output_risk if output_provided else None,
+        },
     )
     notes.append(note["format"])
 

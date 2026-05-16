@@ -33,6 +33,7 @@ def _write_eval_log(
     input_text: str,
     result: dict,
     context: dict,
+    output_text: Optional[str] = None,
 ) -> None:
     """
     Append one evaluation entry to logs/evaluations.json.
@@ -49,6 +50,7 @@ def _write_eval_log(
     entry = {
         "timestamp": result.get("timestamp", ""),
         "input": input_text,
+        "output": output_text,
         "decision": result.get("decision", ""),
         "risk_score": result.get("risk_score", 0.0),
         "confidence": result.get("confidence", 0.0),
@@ -103,8 +105,14 @@ class EvaluateRequest(BaseModel):
     Changed from v3:
       - "prompt" field renamed to "input"
       - Added "context" object (environment, industry, user_id)
+      - Added optional "output" field for full interaction governance
     """
-    input: str = Field(..., min_length=1, description="Content to evaluate")
+    input: str = Field(..., min_length=1, description="User/customer input to evaluate")
+    output: Optional[str] = Field(
+        None,
+        min_length=1,
+        description="Optional model output to evaluate against the input",
+    )
     context: Optional[EvaluateContext] = None
 
 
@@ -163,7 +171,7 @@ def evaluate(req: EvaluateRequest):
     """
     Governance evaluation endpoint.
 
-    Accepts: { input: str, context: { user_id, environment, industry } }
+    Accepts: { input: str, output?: str, context: { user_id, environment, industry } }
     Returns: 8-field schema (decision, risk_score, confidence, violations,
              rewrite, reasoning, field_notes, timestamp)
     """
@@ -178,9 +186,9 @@ def evaluate(req: EvaluateRequest):
         ctx["environment"] = req.context.environment
         ctx["industry"] = req.context.industry
 
-    result = evaluate_prompt(req.input, ctx)
+    result = evaluate_prompt(req.input, ctx, req.output)
 
     # Log every evaluation (Step 4)
-    _write_eval_log(req.input, result, ctx)
+    _write_eval_log(req.input, result, ctx, req.output)
 
     return EvaluateResponse(**result)

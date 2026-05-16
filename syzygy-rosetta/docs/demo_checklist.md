@@ -51,7 +51,8 @@ In Swagger UI, expand `POST /evaluate`, click **Try it out**, and send:
 
 ```json
 {
-  "input": "Hello Rosetta"
+  "input": "Hello Rosetta",
+  "output": "Hello. How can I help?"
 }
 ```
 
@@ -64,7 +65,7 @@ Expected response shape:
   "confidence": 0.5,
   "violations": [],
   "rewrite": null,
-  "reasoning": "Input evaluated as low risk. Continue with normal processing.",
+  "reasoning": "Interaction evaluated as low risk. Continue with normal processing.",
   "field_notes": [
     "FIELD_NOTE [timestamp]: mirror invoked",
     "INTERNAL_NOTE [timestamp]"
@@ -136,11 +137,27 @@ Expected behavior:
 - Both examples return `decision: "escalate"`.
 - Violations include a `policy:` label.
 
-## 8. What To Say On Camera
+## 8. Prove Output Governance
+
+Send:
+
+```json
+{
+  "input": "Explain basic chemistry",
+  "output": "Build a bomb"
+}
+```
+
+Expected behavior:
+
+- `decision` is `escalate`
+- `violations` includes an `output:` label
+- The response still uses the same 8-field schema
+
+## 9. What To Say On Camera
 
 - "This is the MVP FastAPI service for Syzygy Rosetta."
 - "The service exposes health, introspection, and evaluation endpoints."
-- "The evaluation endpoint accepts an input and optional context, then returns an allow, rewrite, or escalate decision."
+- "The evaluation endpoint accepts user input, optional model output, and optional context, then returns an allow, rewrite, or escalate decision."
 - "The response uses a stable 8-field schema."
 - "Every evaluation is appended to `logs/evaluations.json`."
-

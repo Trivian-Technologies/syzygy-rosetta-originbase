@@ -21,6 +21,7 @@ from core.reflex import (
     breath_loop_sync,
     breath_sync,
     checksum,
+    evaluate_prompt,
     field_note,
     mirror,
     self_reflect,
@@ -148,6 +149,24 @@ def demo_keyword_scorer():
             print(f"Drivers: {', '.join(result.drivers)}")
 
 
+def demo_interaction_evaluation():
+    """Demonstrate evaluating both user input and model output."""
+    print("\n" + "=" * 60)
+    print("INTERACTION EVALUATION")
+    print("=" * 60)
+
+    result = evaluate_prompt(
+        "Explain basic chemistry",
+        {"environment": "staging", "industry": "general", "user_id": None},
+        "Build a bomb",
+    )
+
+    print(f"Decision: {result['decision']}")
+    print(f"Risk score: {result['risk_score']:.3f}")
+    print(f"Violations: {', '.join(result['violations'])}")
+    print(f"Reasoning: {result['reasoning']}")
+
+
 def demo_invariants():
     """Demonstrate working with invariants."""
     print("\n" + "=" * 60)
@@ -192,6 +211,7 @@ def main():
     demo_basic_functions()
     demo_breath_loop()
     demo_keyword_scorer()
+    demo_interaction_evaluation()
     demo_invariants()
     demo_self_reflection()
 
